@@ -1,77 +1,46 @@
 import sklearn
+from sklearn import preprocessing
+from sklearn import metrics
 import pandas as pd
-import seaborn
-import matplotlib.pyplot as plt
-from datetime import datetime
 import numpy as np
+import math
 from ipaddress import ip_address
-'''
-I started with this tutorial:
-www.kaggle.com/code/dansbecker/your-first-machine-learning-model/tutorial
-'''
+import matplotlib.pyplot as plt
 
-def preprocess(df: pd.DataFrame):
-    '''
-    scikit-learn needs every column to have numbers. This function makes it so.
-    
-    Right now the URL and user agent fields can't be used in the model.
-    I don't know how to turn them into numbers in a way that preserves their
-    meaning.
-    '''
-    df['timestamp'] = [pd.to_datetime(ts).timestamp() for ts in df['timestamp']]
-    df['src_ip'] = df['src_ip'].apply(
-        lambda x: int(ip_address(x))
-    )
-    df['dst_ip'] = df['dst_ip'].apply(
-        lambda x: int(ip_address(x))
-    )
-    protocols = {
-        'ICMP': 0,
-        'TCP': 1,
-        'UDP': 2
-    }
-    df['protocol'] = df['protocol'].map(protocols)
-    df['is_internal_traffic'] = df['is_internal_traffic'].apply(
-        lambda x: int(x)
-    )
-    attack_types = {
-        'benign': 0,
-        'xss': 1,
-        'exploit-attempt': 2,
-        'sql-injection': 3,
-        'c2': 4,
-        'brute-force': 5,
-        'ddos': 6,
-        'command-injection': 7,
-        'credential-stuffing': 8,
-        'port-scan': 9
-    }
-    df['attack_type'] = df['attack_type'].map(attack_types)
-    return df
+def get_time(X):
+    return pd.to_datetime(X.iloc[:,0]).apply(lambda x: math.sin(
+                              math.tau / 24 * (3600 * x.hour + 60 * x.minute + x.second)
+                          )).values.reshape(-1, 1)
 
+# Define steps used for preprocessing
+preprocessor = sklearn.compose.ColumnTransformer(
+    transformers=[
+        ('timestamp', preprocessing.FunctionTransformer(get_time), ['timestamp']),
+        ('port', 'passthrough', ['src_port', 'dst_port']),
+        ('protocol', preprocessing.OneHotEncoder(drop=None), ['protocol']),
+        ('bytes_sent', 'passthrough', ['bytes_sent', 'bytes_received']),
+        ('internal', 'passthrough', ['is_internal_traffic']),
+    ]
+)
 
-# Get DataFrame from CSV
-data = preprocess(pd.read_csv('traffic.csv'))
+# Define the model
+model = sklearn.ensemble.RandomForestClassifier(class_weight='balanced', random_state=0)
 
-# Select Prediction Target (exactly what it sounds like)
+# Define data pipeline (steps applied to dataset)
+pipeline = sklearn.pipeline.make_pipeline(preprocessor, model)
+
+# Read data
+data = pd.read_csv('traffic.csv')
+X = data[data.columns.drop('attack_type')]
 y = data.attack_type
 
-# Select 'features' (columns used to predict target)
-features = ['timestamp', 'src_ip', 'dst_ip', 'src_port', 'dst_port', 'protocol',
-    'bytes_sent', 'bytes_received', 'is_internal_traffic']
+# Run model
+pipeline.fit(X, y)
+y_p = pipeline.predict(X)
 
-# By convention, features data is called X
-X = data[features]
-
-# Create model
-model = sklearn.linear_model.LogisticRegression(max_iter=1000)
-
-# Fit model
-model.fit(X, y)
-
-# Predict attack types
-y_p = model.predict(X)
-
-# There are other metrics we'll end up using like confusion matrices, recall,
-# F1 score.
-print('Mean Squared Error:', sklearn.metrics.mean_squared_error(y, y_p))
+# Evaluate performance
+cm = metrics.confusion_matrix(y, y_p)
+confusion_matrix = metrics.ConfusionMatrixDisplay(confusion_matrix=cm,
+                   display_labels=pipeline.classes_)
+confusion_matrix.plot()
+plt.show()
