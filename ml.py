@@ -10,11 +10,16 @@ Original file is located at
 import sklearn
 from sklearn import preprocessing
 from sklearn import metrics
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 import pandas as pd
 import numpy as np
 import math
 from ipaddress import ip_address
 import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as ImbPipeline
 
 def get_time(X):
     return pd.to_datetime(X.iloc[:,0]).apply(lambda x: math.sin(
@@ -26,36 +31,55 @@ preprocessor = sklearn.compose.ColumnTransformer(
     transformers=[
         ('timestamp', preprocessing.FunctionTransformer(get_time), ['timestamp']),
         ('port', 'passthrough', ['src_port', 'dst_port']),
-        ('protocol', preprocessing.OneHotEncoder(drop=None), ['protocol']),
-        ('bytes_sent', 'passthrough', ['bytes_sent', 'bytes_received']),
+        ('protocol', preprocessing.OneHotEncoder(handle_unknown='ignore'), ['protocol']),
+        ('bytes', StandardScaler(), ['bytes_sent', 'bytes_received']),
         ('internal', 'passthrough', ['is_internal_traffic']),
     ]
 )
 
 # Define the model
-model = sklearn.ensemble.RandomForestClassifier(class_weight='balanced', random_state=0)
+model = sklearn.ensemble.RandomForestClassifier(class_weight='balanced_subsample', random_state=0, n_estimators=200,
+                                                max_depth=None, min_samples_split=2)
 
 # Define data pipeline (steps applied to dataset)
-pipeline = sklearn.pipeline.make_pipeline(preprocessor, model)
+pipeline = ImbPipeline(steps=[('preprocessor', preprocessor), ('smote', SMOTE(random_state=42)),
+                              ('model', model)])
 
 # Read data
 data = pd.read_csv('traffic.csv')
 X = data[data.columns.drop('attack_type')]
 y = data.attack_type
 
+# Split the data 80% training, 20% testing
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=42,
+                                                    stratify=y)
+
+# Train the model using only the training set
+pipeline.fit(X_train, y_train)
+
 # Run model
-pipeline.fit(X, y)
-y_p = pipeline.predict(X)
+y_p = pipeline.predict(X_test)
 
 # Evaluate performance
-cm = metrics.confusion_matrix(y, y_p)
+cm = metrics.confusion_matrix(y_test, y_p)
 confusion_matrix = metrics.ConfusionMatrixDisplay(confusion_matrix = cm,
                    display_labels = pipeline.classes_)
 
-fig, ax = plt.subplots()
-confusion_matrix.plot(ax = ax, cmap = plt.cm.Blues, colorbar = True, values_format = 'd')
+fig, ax = plt.subplots(figsize=(12, 10))
+confusion_matrix.plot(ax = ax, cmap = plt.cm.Blues, colorbar = True, values_format = 'd',
+                      im_kw={'norm': colors.LogNorm(vmin=1, vmax=cm.max())})
 plt.title("Network Traffic Attack Classification", fontsize = 20, pad = 20)
 plt.xticks(rotation = 45, ha = 'right')
 ax.grid(False)
 
 plt.show()
+
+from sklearn.model_selection import cross_val_score
+
+# Use 5-fold cross-validation to prove the model's stability
+scores = cross_val_score(pipeline, X, y, cv=5)
+
+print("5-Fold Cross-Validation Results:")
+print(f"All Scores: {scores}")
+print(f"Average Accuracy: {scores.mean():.2%}")
+print(f"Standard Deviation: {scores.std():.4f}")
